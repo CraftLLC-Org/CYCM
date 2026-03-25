@@ -15,3 +15,6 @@ test/
 .settings/
 .classpath
 .project
+run/
+config/
+remappedSrc

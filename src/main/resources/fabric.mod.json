@@ -10,7 +10,7 @@
   "contact": {
     "homepage": "https://craftllc.pages.dev"
   },
-  "license": "All-Rights-Reserved",
+  "license": "MIT",
   "icon": "icon.png",
   "environment": "client",
   "entrypoints": {
@@ -20,11 +20,10 @@
   },
   "mixins": [
     "cycm.mixins.json",
-    "cycm.client.mixins.json"
+    "cycm.chatcomponent.mixins.json"
   ],
   "depends": {
     "fabricloader": ">=${loader_version}",
-    "fabric": "*",
     "minecraft": "${minecraft_version}"
   }
 }

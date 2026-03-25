@@ -11,13 +11,17 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.fabricmc.loader.api.FabricLoader;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
-import net.minecraft.particle.ParticleTypes;
-import net.minecraft.util.Formatting;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 
+import java.net.URI;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -25,8 +29,11 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -35,7 +42,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.util.Arrays;
-import java.util.stream.Collectors;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -45,22 +51,27 @@ import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 
-import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.argument;
-import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal;
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument;
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
 
 public class CYCMClient implements ClientModInitializer {
     private static final Path MOD_CFG_DIR = FabricLoader.getInstance().getConfigDir().resolve(Constants.MOD_ID);
-    private static final Path BLOCKED_FILE = MOD_CFG_DIR.resolve("blocked_commands.txt");
-    private static final Path REPEATING_FILE = MOD_CFG_DIR.resolve("repeating_settings.txt");
+    private static final Path LEGACY_BLOCKED_FILE = MOD_CFG_DIR.resolve("blocked_commands.txt");
+    private static final Path LEGACY_REPEATING_FILE = MOD_CFG_DIR.resolve("repeating_settings.txt");
     private static final Path CMD_LOG_FILE = MOD_CFG_DIR.resolve("commands_log.txt");
     private static final Path CHAT_LOG_FILE = MOD_CFG_DIR.resolve("chat_log.txt");
+    private static final Pattern REPEAT_SUFFIX_PATTERN = Pattern.compile("^(.*?)\\s*(?<!\\\\)\\+(\\d+)(?:\\s+(\\d+))?\\s*$");
+    private static final Pattern SLEEP_PATTERN = Pattern.compile("^!sleep\\s+(\\d+)\\s*$", Pattern.CASE_INSENSITIVE);
 
     private static ScheduledExecutorService scheduler;
     public static ModConfigManager configManager;
     private static Set<String> blockedCommands = Collections.synchronizedSet(new HashSet<>());
     private static int maxRepeats = 20;
     private static int maxDelaySeconds = 5;
+    private static int maxTntCount = 20;
+    private static int maxTntRadius = 8;
     private static CYCMClient instance;
+    private static boolean chatSourceRunning = false;
 
     public CYCMClient() {
         instance = this;
@@ -74,6 +85,22 @@ public class CYCMClient implements ClientModInitializer {
         return blockedCommands;
     }
 
+    public static int getMaxRepeats() {
+        return maxRepeats;
+    }
+
+    public static int getMaxDelaySeconds() {
+        return maxDelaySeconds;
+    }
+
+    public static int getMaxTntCount() {
+        return maxTntCount;
+    }
+
+    public static int getMaxTntRadius() {
+        return maxTntRadius;
+    }
+
     @Override
     public void onInitializeClient() {
         Constants.LOGGER.info("CYCM: Ініціалізація.");
@@ -84,6 +111,7 @@ public class CYCMClient implements ClientModInitializer {
         Constants.LOGGER.info("CYCM Мод " + (configManager.getConfig().isModEnabled() ? "увімкнено" : "вимкнено"));
         loadBlockedCommands();
         loadRepeatingSettings();
+        loadTntSettings();
         registerEventHandlers();
         registerClientCommands();
     }
@@ -116,16 +144,25 @@ public class CYCMClient implements ClientModInitializer {
             configManager.stopWatchingConfigFile();
             stopChatSource();
         });
+
+        ClientSendMessageEvents.CHAT.register(message -> {
+            if (configManager.getConfig().isYoutubeEnabled() && configManager.getConfig().isYoutubeSendEnabled()) {
+                YouTubeClient.sendMessageToChat(message);
+            }
+        });
     }
 
     public static void startChatSource() {
+        if (chatSourceRunning) return;
+        chatSourceRunning = true;
+        
         if (configManager.getConfig().isYoutubeEnabled()) {
             if (configManager.getConfig().getChatMode() == ChatMode.API) {
                 HttpChatServer.stopServer();
                 YouTubeClient.startPolling();
             } else {
                 YouTubeClient.stopPolling();
-                HttpChatServer.startServer(configManager.getConfig().getHttpPort());
+                HttpChatServer.startServer(configManager.getConfig().getHttpMessagesPort());
             }
         } else {
             YouTubeClient.stopPolling();
@@ -140,6 +177,9 @@ public class CYCMClient implements ClientModInitializer {
     }
 
     public static void stopChatSource() {
+        if (!chatSourceRunning) return;
+        chatSourceRunning = false;
+        
         YouTubeClient.stopPolling();
         HttpChatServer.stopServer();
         TelegramClient.stopPolling();
@@ -148,14 +188,14 @@ public class CYCMClient implements ClientModInitializer {
     public static void setModEnabled(boolean enabled) {
         if (configManager.getConfig().isModEnabled() == enabled) {
             sendLocalizedMessage("mod_already_state",
-                    (enabled ? Text.translatable("cycm.state.enabled") : Text.translatable("cycm.state.disabled")));
+                    (enabled ? Component.translatable("cycm.state.enabled") : Component.translatable("cycm.state.disabled")));
             return;
         }
         configManager.getConfig().setModEnabled(enabled);
         configManager.saveConfig();
         sendLocalizedMessage("mod_state",
-                (enabled ? Text.translatable("cycm.state.enabled") : Text.translatable("cycm.state.disabled")));
-        if (enabled && MinecraftClient.getInstance().player != null)
+                (enabled ? Component.translatable("cycm.state.enabled") : Component.translatable("cycm.state.disabled")));
+        if (enabled && Minecraft.getInstance().player != null)
             startChatSource();
         else
             stopChatSource();
@@ -163,7 +203,7 @@ public class CYCMClient implements ClientModInitializer {
 
     // Called from YouTubeClient thread
     public void processYouTubeMessage(String author, String message) {
-        if (!configManager.getConfig().isModEnabled() || MinecraftClient.getInstance().player == null)
+        if (!configManager.getConfig().isModEnabled() || Minecraft.getInstance().player == null)
             return;
 
         // Log message (using original for logging or translated?)
@@ -174,14 +214,14 @@ public class CYCMClient implements ClientModInitializer {
             // It's a command
             // Execute on main thread to be safe with Minecraft
             final String fMessage = message;
-            MinecraftClient.getInstance().execute(() -> {
+            Minecraft.getInstance().execute(() -> {
                 procCmdLine(author, fMessage);
             });
         } else {
             // It's chat
             // Translate & codes ONLY for chat to avoid crashes in sendChatCommand
             final String fMessage = translateColorCodes(message);
-            MinecraftClient.getInstance().execute(() -> {
+            Minecraft.getInstance().execute(() -> {
                 procChatLine(author, fMessage);
             });
         }
@@ -225,6 +265,7 @@ public class CYCMClient implements ClientModInitializer {
 
         int totalUsedReps = 0;
         long maxPossibleDuration = (long) maxRepeats * maxDelaySeconds;
+        long timelineOffsetSeconds = 0L;
         int n = segments.size();
 
         for (int i = 0; i < n; i++) {
@@ -239,7 +280,7 @@ public class CYCMClient implements ClientModInitializer {
             String cmdWithPotentialSlash = segment;
 
             // Parse for +reps [delay] suffix, ignoring escaped \+
-            Matcher m = Pattern.compile("^(.*?)\\s*(?<!\\\\)\\+(\\d+)(?:\\s+(\\d+))?\\s*$").matcher(segment);
+            Matcher m = REPEAT_SUFFIX_PATTERN.matcher(segment);
             if (m.find()) {
                 cmdWithPotentialSlash = m.group(1).trim();
                 try {
@@ -259,6 +300,15 @@ public class CYCMClient implements ClientModInitializer {
             // Handle optional leading slash in segments
             if (cleanCmd.startsWith("/")) {
                 cleanCmd = cleanCmd.substring(1).trim();
+            }
+
+            Matcher sleepMatcher = SLEEP_PATTERN.matcher(cleanCmd);
+            if (sleepMatcher.matches()) {
+                try {
+                    timelineOffsetSeconds += Math.min(Long.parseLong(sleepMatcher.group(1)), maxPossibleDuration);
+                } catch (NumberFormatException ignored) {
+                }
+                continue;
             }
 
             // Calculate fair budget for this segment with priority to the first ones
@@ -282,8 +332,11 @@ public class CYCMClient implements ClientModInitializer {
             }
 
             if (allowedReps > 0) {
-                execSingleCmdLogic(nick, cleanCmd, allowedReps, delay, isLocal);
+                execSingleCmdLogic(nick, cleanCmd, allowedReps, delay, timelineOffsetSeconds, isLocal);
                 totalUsedReps += allowedReps;
+                if (delay > 0 && allowedReps > 1) {
+                    timelineOffsetSeconds += (long) (allowedReps - 1) * delay;
+                }
             }
         }
     }
@@ -329,47 +382,138 @@ public class CYCMClient implements ClientModInitializer {
         return sb.toString();
     }
 
-    private void execSingleCmdLogic(String nick, String cleanCmd, int reps, int delay, boolean isLocal) {
+    private void execSingleCmdLogic(String nick, String cleanCmd, int reps, int delay, long initialOffsetSeconds, boolean isLocal) {
         if (scheduler == null || scheduler.isShutdown())
             scheduler = Executors.newSingleThreadScheduledExecutor();
 
         String baseCmd = cleanCmd.split(" ")[0].toLowerCase();
 
-        if (isCmdBlocked(baseCmd) && !isModCmd(baseCmd)) {
-            sendLocalizedMessage("cmd_blocked", Text.literal("/" + cleanCmd));
+        if (!isLocal && isModCmd(baseCmd)) {
             return;
         }
 
-        final String fCmd = cleanCmd; // Clean command (no slash) for sendChatCommand
+        if (isCmdBlocked(baseCmd) && !isModCmd(baseCmd)) {
+            sendLocalizedMessage("cmd_blocked", Component.literal("/" + cleanCmd));
+            return;
+        }
+
+        final String fCmd = cleanCmd;
         final int fReps = reps;
         final int fDel = delay;
+
+        if (Minecraft.getInstance().player != null) {
+            Minecraft.getInstance().execute(() -> {
+                if (Minecraft.getInstance().player == null)
+                    return;
+                if (isLocal) {
+                    Minecraft.getInstance().player.sendSystemMessage(
+                            Component.translatable("cycm.message.executing_command", Component.literal("/" + fCmd)));
+                } else {
+                    Minecraft.getInstance().player.sendSystemMessage(
+                            Component.literal("§f" + nick + " ")
+                                    .append(Component.translatable("cycm.message.cmd_executed",
+                                            Component.literal("/" + fCmd))));
+                }
+            });
+        }
+
         for (int r = 0; r < fReps; r++) {
             scheduler.schedule(() -> {
-                if (MinecraftClient.getInstance().player != null) {
-                    MinecraftClient.getInstance().execute(() -> {
-                        if (MinecraftClient.getInstance().player == null)
+                if (Minecraft.getInstance().player != null) {
+                    Minecraft.getInstance().execute(() -> {
+                        if (Minecraft.getInstance().player == null)
                             return;
-                        if (isLocal) {
-                            MinecraftClient.getInstance().player.sendMessage(
-                                    Text.translatable("cycm.message.executing_command", Text.literal("/" + fCmd)),
-                                    false);
-                        } else {
-                            MinecraftClient.getInstance().player.sendMessage(
-                                    Text.literal("§f" + nick + " ")
-                                            .append(Text.translatable("cycm.message.cmd_executed",
-                                                    Text.literal("/" + fCmd))),
-                                    false);
+                        if (handleSpecialCommand(fCmd)) {
+                            return;
                         }
-                        // Send command without slash
-                        MinecraftClient.getInstance().getNetworkHandler().sendChatCommand(fCmd);
+                        String finalCmd = fCmd;
+                        if (configManager.getConfig().isCompatibilityMode() && !fCmd.contains(":")) {
+                            finalCmd = "minecraft:" + fCmd;
+                        }
+                        Minecraft.getInstance().getConnection().sendCommand(finalCmd);
                     });
                 }
-            }, (long) r * fDel, TimeUnit.SECONDS);
+            }, initialOffsetSeconds + (long) r * fDel, TimeUnit.SECONDS);
         }
     }
 
+    private boolean handleSpecialCommand(String cleanCmd) {
+        String[] parts = cleanCmd.trim().split("\\s+");
+        if (parts.length == 0 || parts[0].isEmpty()) {
+            return false;
+        }
+        String base = parts[0].toLowerCase();
+        return switch (base) {
+            case "tnt" -> {
+                int count = parts.length >= 2 ? parsePositiveInt(parts[1], 1) : 1;
+                int radius = parts.length >= 3 ? parsePositiveInt(parts[2], 0) : 0;
+                execTntRing(count, radius);
+                yield true;
+            }
+            case "ka", "killaura" -> {
+                execKillAura(20.0);
+                yield true;
+            }
+            case "ke", "killentities" -> {
+                execKillEntities();
+                yield true;
+            }
+            case "blocklist" -> {
+                dispBlockList();
+                yield true;
+            }
+            default -> false;
+        };
+    }
+
+    private int parsePositiveInt(String value, int fallback) {
+        try {
+            return Math.max(0, Integer.parseInt(value));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private int execTntRing(int count, int radius) {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.player == null) {
+            sendLocalizedMessage("no_player");
+            return 0;
+        }
+        int requestedCount = Math.max(1, count);
+        int requestedRadius = Math.max(0, radius);
+        int safeCount = Math.min(requestedCount, maxTntCount);
+        int safeRadius = Math.min(requestedRadius, maxTntRadius);
+
+        if (requestedCount > maxTntCount) {
+            sendLocalizedMessage("tnt_count_limit_hit", Component.literal(String.valueOf(requestedCount)),
+                    Component.literal(String.valueOf(maxTntCount)));
+        }
+        if (requestedRadius > maxTntRadius) {
+            sendLocalizedMessage("tnt_radius_limit_hit", Component.literal(String.valueOf(requestedRadius)),
+                    Component.literal(String.valueOf(maxTntRadius)));
+        }
+
+        double centerX = client.player.getX();
+        double centerY = client.player.getY();
+        double centerZ = client.player.getZ();
+        if (safeCount == 1 || safeRadius <= 0) {
+            for (int i = 0; i < safeCount; i++) {
+                sendToSrv(String.format(Locale.ROOT, "summon minecraft:tnt %.2f %.2f %.2f", centerX, centerY, centerZ));
+            }
+            return 1;
+        }
+        for (int i = 0; i < safeCount; i++) {
+            double angle = 2.0 * Math.PI * i / safeCount;
+            double x = centerX + safeRadius * Math.cos(angle);
+            double z = centerZ + safeRadius * Math.sin(angle);
+            sendToSrv(String.format(Locale.ROOT, "summon minecraft:tnt %.2f %.2f %.2f", x, centerY, z));
+        }
+        return 1;
+    }
+
     private void execCmdInGame(String fullCmd) {
-        if (MinecraftClient.getInstance().player == null) {
+        if (Minecraft.getInstance().player == null) {
             sendLocalizedMessage("no_player");
             return;
         }
@@ -378,14 +522,15 @@ public class CYCMClient implements ClientModInitializer {
     }
 
     private boolean isModCmd(String cmd) {
-        return cmd.equals("cycm");
+        return "cycm".equalsIgnoreCase(cmd) || "ce".equalsIgnoreCase(cmd);
     }
 
     private void procChatLine(String nick, String msg) {
-        if (MinecraftClient.getInstance().player != null) {
-            MinecraftClient.getInstance().player.sendMessage(Text.literal("<")
-                    .append(Text.literal(nick).formatted(Formatting.WHITE)).append("> ").append(Text.literal(msg)),
-                    false);
+        if (Minecraft.getInstance().player != null) {
+            Minecraft.getInstance().player.sendSystemMessage(Component.literal("<")
+                    .append(Component.literal(nick).withStyle(ChatFormatting.WHITE))
+                    .append("> ")
+                    .append(Component.literal(msg)));
         }
     }
 
@@ -402,28 +547,38 @@ public class CYCMClient implements ClientModInitializer {
     }
 
     private void loadBlockedCommands() {
-        ensureFile(BLOCKED_FILE);
-        try {
-            synchronized (blockedCommands) {
-                blockedCommands.clear();
-                Files.readAllLines(BLOCKED_FILE).stream()
-                        .filter(l -> !l.trim().isEmpty() && !l.trim().startsWith("#"))
-                        .map(String::trim)
-                        .map(l -> l.startsWith("/") ? l.substring(1).toLowerCase() : l.toLowerCase())
-                        .forEach(blockedCommands::add);
+        synchronized (blockedCommands) {
+            blockedCommands.clear();
+            configManager.getConfig().getBlockedCommands().stream()
+                    .filter(l -> l != null && !l.trim().isEmpty())
+                    .map(String::trim)
+                    .map(l -> l.startsWith("/") ? l.substring(1).toLowerCase() : l.toLowerCase())
+                    .forEach(blockedCommands::add);
+        }
+        if (blockedCommands.isEmpty() && Files.exists(LEGACY_BLOCKED_FILE)) {
+            try {
+                synchronized (blockedCommands) {
+                    Files.readAllLines(LEGACY_BLOCKED_FILE).stream()
+                            .filter(l -> !l.trim().isEmpty() && !l.trim().startsWith("#"))
+                            .map(String::trim)
+                            .map(l -> l.startsWith("/") ? l.substring(1).toLowerCase() : l.toLowerCase())
+                            .forEach(blockedCommands::add);
+                }
+                saveBlockedCommands();
+            } catch (IOException e) {
+                Constants.LOGGER.error("Legacy blocked commands migration failed: {}", e.getMessage());
             }
-        } catch (IOException e) {
-            Constants.LOGGER.error("Помилка читання файлу заблокованих команд: {}", e.getMessage());
         }
         initBlockedCommands();
     }
 
     private void saveBlockedCommands() {
-        try {
-            Files.write(BLOCKED_FILE, blockedCommands.stream().map(s -> "/" + s).collect(Collectors.toList()));
-        } catch (IOException e) {
-            Constants.LOGGER.error("Помилка збереження файлу заблокованих команд: {}", e.getMessage());
+        List<String> snapshot;
+        synchronized (blockedCommands) {
+            snapshot = new ArrayList<>(blockedCommands);
         }
+        configManager.getConfig().setBlockedCommands(snapshot);
+        configManager.saveConfig();
     }
 
     public boolean isCmdBlocked(String cmd) {
@@ -443,6 +598,9 @@ public class CYCMClient implements ClientModInitializer {
         if (blockedCommands.add("cycm")) {
             chg = true;
         }
+        if (blockedCommands.add("ce")) {
+            chg = true;
+        }
 
         if (chg)
             saveBlockedCommands();
@@ -451,21 +609,27 @@ public class CYCMClient implements ClientModInitializer {
     private void blockCommand(String cmd) {
         String cleanCmd = cmd.toLowerCase().startsWith("/") ? cmd.substring(1).toLowerCase() : cmd.toLowerCase();
         if (isModCmd(cleanCmd)) {
-            sendLocalizedMessage("mod_cmd_cannot_be_blocked", Text.literal("/" + cleanCmd));
+            sendLocalizedMessage("mod_cmd_cannot_be_blocked", Component.literal("/" + cleanCmd));
             return;
         }
         if (blockedCommands.add(cleanCmd)) {
-            sendLocalizedMessage("cmd_blocked_success", Text.literal("/" + cleanCmd));
+            sendLocalizedMessage("cmd_blocked_success", Component.literal("/" + cleanCmd));
             saveBlockedCommands();
         } else {
-            sendLocalizedMessage("cmd_already_blocked", Text.literal("/" + cleanCmd));
+            sendLocalizedMessage("cmd_already_blocked", Component.literal("/" + cleanCmd));
+        }
+    }
+
+    public static void blockCommandFromUI(String cmd) {
+        if (instance != null) {
+            instance.blockCommand(cmd);
         }
     }
 
     private void unblockCommand(String cmd) {
         String cleanCmd = cmd.toLowerCase().startsWith("/") ? cmd.substring(1).toLowerCase() : cmd.toLowerCase();
         if (isModCmd(cleanCmd)) {
-            sendLocalizedMessage("mod_cmd_cannot_be_unblocked", Text.literal("/" + cleanCmd));
+            sendLocalizedMessage("mod_cmd_cannot_be_unblocked", Component.literal("/" + cleanCmd));
             return;
         }
         if ("all".equalsIgnoreCase(cleanCmd)) {
@@ -475,67 +639,125 @@ public class CYCMClient implements ClientModInitializer {
             initBlockedCommands();
             sendLocalizedMessage("all_cmds_unblocked");
         } else if (blockedCommands.remove(cleanCmd)) {
-            sendLocalizedMessage("cmd_unblocked_success", Text.literal("/" + cleanCmd));
+            sendLocalizedMessage("cmd_unblocked_success", Component.literal("/" + cleanCmd));
             saveBlockedCommands();
         } else {
-            sendLocalizedMessage("cmd_not_blocked", Text.literal("/" + cleanCmd));
+            sendLocalizedMessage("cmd_not_blocked", Component.literal("/" + cleanCmd));
+        }
+    }
+
+    public static void unblockCommandFromUI(String cmd) {
+        if (instance != null) {
+            instance.unblockCommand(cmd);
         }
     }
 
     private void loadRepeatingSettings() {
-        ensureFile(REPEATING_FILE);
-        try {
-            String sLine = Files.readAllLines(REPEATING_FILE).stream()
-                    .filter(l -> !l.trim().isEmpty() && !l.trim().startsWith("#")).findFirst().orElse(null);
-            if (sLine != null && sLine.split(":").length == 2) {
-                try {
-                    maxRepeats = Integer.parseInt(sLine.split(":")[0].trim());
-                    maxDelaySeconds = Integer.parseInt(sLine.split(":")[1].trim());
-                } catch (NumberFormatException e) {
-                    Constants.LOGGER.error("Невірні налаштування повторів: {}. Використовуються стандартні.", sLine);
+        maxRepeats = Math.max(1, configManager.getConfig().getMaxRepeats());
+        maxDelaySeconds = Math.max(0, configManager.getConfig().getMaxDelaySeconds());
+        if (Files.exists(LEGACY_REPEATING_FILE) && configManager.getConfig().getMaxRepeats() == 20 && configManager.getConfig().getMaxDelaySeconds() == 5) {
+            try {
+                String sLine = Files.readAllLines(LEGACY_REPEATING_FILE).stream()
+                        .filter(l -> !l.trim().isEmpty() && !l.trim().startsWith("#")).findFirst().orElse(null);
+                if (sLine != null && sLine.split(":").length == 2) {
+                    maxRepeats = Math.max(1, Integer.parseInt(sLine.split(":")[0].trim()));
+                    maxDelaySeconds = Math.max(0, Integer.parseInt(sLine.split(":")[1].trim()));
+                    saveRepeatingSettings();
                 }
-            } else {
-                Files.write(REPEATING_FILE, Collections.singletonList(maxRepeats + ":" + maxDelaySeconds));
+            } catch (IOException | NumberFormatException e) {
+                Constants.LOGGER.error("Legacy repeating settings migration failed: {}", e.getMessage());
             }
-        } catch (IOException e) {
-            Constants.LOGGER.error("Помилка читання налаштувань повторів: {}", e.getMessage());
         }
     }
 
-    private void setMaxRepeats(int num) {
+    private void loadTntSettings() {
+        maxTntCount = Math.max(1, configManager.getConfig().getMaxTntCount());
+        maxTntRadius = Math.max(0, configManager.getConfig().getMaxTntRadius());
+    }
+
+    public static void setMaxRepeats(int num) {
         if (num <= 0) {
             sendLocalizedMessage("num_repeats_positive_warning");
             return;
         }
+        if (maxRepeats == num) {
+            return;
+        }
         maxRepeats = num;
         saveRepeatingSettings();
-        sendLocalizedMessage("repeats_set_success", Text.literal(String.valueOf(num)));
+        sendLocalizedMessage("repeats_set_success", Component.literal(String.valueOf(num)));
     }
 
-    private void setMaxDelaySeconds(int delay) {
+    public static void setMaxDelaySeconds(int delay) {
         if (delay < 0) {
             sendLocalizedMessage("delay_positive_warning");
             return;
         }
+        if (maxDelaySeconds == delay) {
+            return;
+        }
         maxDelaySeconds = delay;
         saveRepeatingSettings();
-        sendLocalizedMessage("delay_set_success", Text.literal(String.valueOf(delay)));
+        sendLocalizedMessage("delay_set_success", Component.literal(String.valueOf(delay)));
     }
 
-    private void saveRepeatingSettings() {
-        try {
-            Files.write(REPEATING_FILE, Collections.singletonList(maxRepeats + ":" + maxDelaySeconds));
-        } catch (IOException e) {
-            Constants.LOGGER.error("Помилка збереження налаштувань повторів: {}", e.getMessage());
+    private static void saveRepeatingSettings() {
+        configManager.getConfig().setMaxRepeats(maxRepeats);
+        configManager.getConfig().setMaxDelaySeconds(maxDelaySeconds);
+        configManager.saveConfig();
+    }
+
+    public static void setMaxTntCount(int count) {
+        if (count <= 0) {
+            sendLocalizedMessage("tnt_count_positive_warning");
+            return;
+        }
+        if (maxTntCount == count) {
+            return;
+        }
+        maxTntCount = count;
+        saveTntSettings();
+        sendLocalizedMessage("tnt_count_set_success", Component.literal(String.valueOf(count)));
+    }
+
+    public static void setMaxTntRadius(int radius) {
+        if (radius < 0) {
+            sendLocalizedMessage("tnt_radius_positive_warning");
+            return;
+        }
+        if (maxTntRadius == radius) {
+            return;
+        }
+        maxTntRadius = radius;
+        saveTntSettings();
+        sendLocalizedMessage("tnt_radius_set_success", Component.literal(String.valueOf(radius)));
+    }
+
+    private static void saveTntSettings() {
+        configManager.getConfig().setMaxTntCount(maxTntCount);
+        configManager.getConfig().setMaxTntRadius(maxTntRadius);
+        configManager.saveConfig();
+    }
+
+    private void stopScheduledCommands() {
+        if (scheduler != null && !scheduler.isShutdown()) {
+            scheduler.shutdownNow();
+            scheduler = null;
+            sendLocalizedMessage("scheduled_commands_stopped");
+        } else {
+            sendLocalizedMessage("no_scheduled_commands");
         }
     }
 
     private void registerClientCommands() {
         ClientCommandRegistrationCallback.EVENT.register((disp, regAcc) -> {
-            disp.register(literal("tnt").executes(ctx -> {
-                sendToSrv("summon minecraft:tnt");
-                return 1;
-            }));
+            disp.register(literal("tnt")
+                    .executes(ctx -> execTntRing(1, 0))
+                    .then(argument("count", IntegerArgumentType.integer(1)).executes(ctx ->
+                            execTntRing(IntegerArgumentType.getInteger(ctx, "count"), 0))
+                            .then(argument("radius", IntegerArgumentType.integer(0)).executes(ctx ->
+                                    execTntRing(IntegerArgumentType.getInteger(ctx, "count"),
+                                            IntegerArgumentType.getInteger(ctx, "radius"))))));
             disp.register(literal("blocklist").executes(ctx -> {
                 dispBlockList();
                 return 1;
@@ -568,19 +790,46 @@ public class CYCMClient implements ClientModInitializer {
                                 if (configManager.getConfig().getChatMode() == ChatMode.API)
                                     YouTubeClient.forceStartPolling();
                                 return 1;
-                            }))))
-                    .then(literal("http")
-                            .then(literal("port").then(argument("port", IntegerArgumentType.integer()).executes(ctx -> {
-                                int port = IntegerArgumentType.getInteger(ctx, "port");
-                                configManager.getConfig().setHttpPort(port);
+                            })))
+                            .then(literal("oa2client").then(argument("client", StringArgumentType.string()).executes(ctx -> {
+                                String client = StringArgumentType.getString(ctx, "client");
+                                configManager.getConfig().setYoutubeClientId(client);
                                 configManager.saveConfig();
-                                sendLocalizedMessage("http_port_set_success", port);
-                                if (configManager.getConfig().getChatMode() == ChatMode.HTTP
-                                        && configManager.getConfig().isModEnabled()) {
-                                    HttpChatServer.startServer(port);
-                                }
+                                sendLocalizedMessage("yt_client_set_success");
                                 return 1;
-                            }))))
+                            })))
+                            .then(literal("oa2secret").then(argument("secret", StringArgumentType.string()).executes(ctx -> {
+                                String secret = StringArgumentType.getString(ctx, "secret");
+                                configManager.getConfig().setYoutubeClientSecret(secret);
+                                configManager.saveConfig();
+                                sendLocalizedMessage("yt_secret_set_success");
+                                return 1;
+                            })))
+                            .then(literal("connect").executes(ctx -> {
+                                String url = YouTubeClient.getAuthUrl();
+                                // Ensure server is running for callback regardless of mode
+                                HttpChatServer.startServer(configManager.getConfig().getHttpMessagesPort());
+
+                                MutableComponent link = Component.literal(url).withStyle(style -> style
+                                        .withClickEvent(new ClickEvent.OpenUrl(URI.create(url)))
+                                        .applyFormats(ChatFormatting.UNDERLINE, ChatFormatting.AQUA));
+
+                                sendLocalizedMessage("yt_auth_url", link);
+                                return 1;
+                            }))
+                            .then(literal("send")
+                                    .then(literal("on").executes(ctx -> {
+                                        configManager.getConfig().setYoutubeSendEnabled(true);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("yt_send_state", Component.translatable("cycm.state.enabled"));
+                                        return 1;
+                                    }))
+                                    .then(literal("off").executes(ctx -> {
+                                        configManager.getConfig().setYoutubeSendEnabled(false);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("yt_send_state", Component.translatable("cycm.state.disabled"));
+                                        return 1;
+                                    }))))
                     .then(literal("ytmode")
                             .then(literal("api").executes(ctx -> {
                                 configManager.getConfig().setChatMode(ChatMode.API);
@@ -647,26 +896,82 @@ public class CYCMClient implements ClientModInitializer {
                             .then(literal("on").executes(ctx -> {
                                 configManager.getConfig().setGroupingMessages(true);
                                 configManager.saveConfig();
-                                sendLocalizedMessage("grouping_set", Text.translatable("cycm.state.enabled"));
+                                sendLocalizedMessage("grouping_set", Component.translatable("cycm.state.enabled"));
                                 return 1;
                             }))
                             .then(literal("off").executes(ctx -> {
                                 configManager.getConfig().setGroupingMessages(false);
                                 configManager.saveConfig();
-                                sendLocalizedMessage("grouping_set", Text.translatable("cycm.state.disabled"));
+                                sendLocalizedMessage("grouping_set", Component.translatable("cycm.state.disabled"));
                                 return 1;
                             })))
+                    // Server compatibility mode commands
+                    .then(literal("server")
+                            .then(literal("compat")
+                                    .then(literal("on").executes(ctx -> {
+                                        configManager.getConfig().setCompatibilityMode(true);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("compat_mode_set", Component.translatable("cycm.state.enabled"));
+                                        return 1;
+                                    }))
+                                    .then(literal("off").executes(ctx -> {
+                                        configManager.getConfig().setCompatibilityMode(false);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("compat_mode_set", Component.translatable("cycm.state.disabled"));
+                                        return 1;
+                                    }))))
+                    // Update http commands to include UI controls
+                    .then(literal("http")
+                            .then(literal("messages")
+                                    .then(literal("port").then(argument("port", IntegerArgumentType.integer()).executes(ctx -> {
+                                        int port = IntegerArgumentType.getInteger(ctx, "port");
+                                        configManager.getConfig().setHttpMessagesPort(port);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("http_messages_port_set_success", port);
+                                        if (configManager.getConfig().getChatMode() == ChatMode.HTTP
+                                                && configManager.getConfig().isModEnabled()) {
+                                            HttpChatServer.startServer(port);
+                                        }
+                                        return 1;
+                                    }))))
+                            .then(literal("ui")
+                                    .then(literal("on").executes(ctx -> {
+                                        configManager.getConfig().setWebUIEnabled(true);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("webui_state", Component.translatable("cycm.state.enabled"));
+                                        // Start web UI server
+                                        org.craftllc.minecraft.mod.cycm.http.WebUIServer.startServer(configManager.getConfig().getWebUIPort());
+                                        return 1;
+                                    }))
+                                    .then(literal("off").executes(ctx -> {
+                                        configManager.getConfig().setWebUIEnabled(false);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("webui_state", Component.translatable("cycm.state.disabled"));
+                                        // Stop web UI server
+                                        org.craftllc.minecraft.mod.cycm.http.WebUIServer.stopServer();
+                                        return 1;
+                                    }))
+                                    .then(literal("port").then(argument("port", IntegerArgumentType.integer()).executes(ctx -> {
+                                        int port = IntegerArgumentType.getInteger(ctx, "port");
+                                        configManager.getConfig().setWebUIPort(port);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("webui_port_set_success", port);
+                                        if (configManager.getConfig().isWebUIEnabled()) {
+                                            org.craftllc.minecraft.mod.cycm.http.WebUIServer.startServer(port);
+                                        }
+                                        return 1;
+                                    })))))
                     .then(literal("actionbar")
                             .then(literal("on").executes(ctx -> {
                                 configManager.getConfig().setActionbarEnabled(true);
                                 configManager.saveConfig();
-                                sendLocalizedMessage("actionbar_set", Text.translatable("cycm.state.enabled"));
+                                sendLocalizedMessage("actionbar_set", Component.translatable("cycm.state.enabled"));
                                 return 1;
                             }))
                             .then(literal("off").executes(ctx -> {
                                 configManager.getConfig().setActionbarEnabled(false);
                                 configManager.saveConfig();
-                                sendLocalizedMessage("actionbar_set", Text.translatable("cycm.state.disabled"));
+                                sendLocalizedMessage("actionbar_set", Component.translatable("cycm.state.disabled"));
                                 return 1;
                             })))
                     .then(literal("on").executes(ctx -> {
@@ -681,11 +986,10 @@ public class CYCMClient implements ClientModInitializer {
                         restartMod();
                         return 1;
                     }))
-                    .then(literal("resetfile").then(
-                            argument("fname", StringArgumentType.string()).suggests(this::sugReset).executes(ctx -> {
-                                resetConfig(StringArgumentType.getString(ctx, "fname"));
-                                return 1;
-                            })))
+                    .then(literal("stop").executes(ctx -> {
+                        stopScheduledCommands();
+                        return 1;
+                    }))
                     .then(literal("execute")
                             .then(argument("cmd_reps", StringArgumentType.greedyString()).executes(ctx -> {
                                 execCmdInGame(StringArgumentType.getString(ctx, "cmd_reps"));
@@ -701,7 +1005,18 @@ public class CYCMClient implements ClientModInitializer {
                             .then(argument("Y", IntegerArgumentType.integer()).executes(ctx -> {
                                 setMaxDelaySeconds(IntegerArgumentType.getInteger(ctx, "Y"));
                                 return 1;
-                            }))));
+                            })))
+                    .then(literal("tnt")
+                            .then(literal("count")
+                                    .then(argument("N", IntegerArgumentType.integer(1)).executes(ctx -> {
+                                        setMaxTntCount(IntegerArgumentType.getInteger(ctx, "N"));
+                                        return 1;
+                                    })))
+                            .then(literal("radius")
+                                    .then(argument("R", IntegerArgumentType.integer(0)).executes(ctx -> {
+                                        setMaxTntRadius(IntegerArgumentType.getInteger(ctx, "R"));
+                                        return 1;
+                                    })))));
             disp.register(literal("ce")
                     .then(argument("cmd_reps", StringArgumentType.greedyString()).executes(ctx -> {
                         execCmdInGame(StringArgumentType.getString(ctx, "cmd_reps"));
@@ -724,41 +1039,6 @@ public class CYCMClient implements ClientModInitializer {
         return b.buildFuture();
     }
 
-    private CompletableFuture<Suggestions> sugReset(CommandContext<FabricClientCommandSource> ctx,
-            SuggestionsBuilder b) {
-        String rem = b.getRemaining().toLowerCase();
-        if ("blocked_commands.txt".startsWith(rem))
-            b.suggest("blocked_commands.txt");
-        if ("repeating_settings.txt".startsWith(rem))
-            b.suggest("repeating_settings.txt");
-        return b.buildFuture();
-    }
-
-    private void resetConfig(String fname) {
-        Path tf;
-        Runnable pa = null;
-        if (fname.equalsIgnoreCase("blocked_commands.txt")) {
-            tf = BLOCKED_FILE;
-            pa = this::loadBlockedCommands;
-        } else if (fname.equalsIgnoreCase("repeating_settings.txt")) {
-            tf = REPEATING_FILE;
-            pa = this::loadRepeatingSettings;
-        } else {
-            sendLocalizedMessage("unknown_file", Text.literal(fname));
-            return;
-        }
-        try {
-            if (Files.exists(tf))
-                Files.delete(tf);
-            ensureFile(tf);
-            if (pa != null)
-                pa.run();
-            sendLocalizedMessage("file_reset_success", Text.literal(fname));
-        } catch (IOException e) {
-            sendLocalizedMessage("reset_error", Text.literal(fname), Text.literal(e.getMessage()));
-        }
-    }
-
     private void restartMod() {
         sendLocalizedMessage("restarting_cycm_message");
         Constants.LOGGER.info("Перезапускаю мод...");
@@ -768,7 +1048,8 @@ public class CYCMClient implements ClientModInitializer {
         configManager.loadConfig();
         loadBlockedCommands();
         loadRepeatingSettings();
-        if (configManager.getConfig().isModEnabled() && MinecraftClient.getInstance().player != null) {
+        loadTntSettings();
+        if (configManager.getConfig().isModEnabled() && Minecraft.getInstance().player != null) {
             startChatSource();
             sendLocalizedMessage("cycm_restarted_success");
         } else {
@@ -783,48 +1064,59 @@ public class CYCMClient implements ClientModInitializer {
             sendLocalizedMessage("blocked_cmds_header");
             synchronized (blockedCommands) {
                 blockedCommands.stream().sorted()
-                        .forEach(cmd -> sendLocalizedMessage("blocked_cmd_item", Text.literal("/" + cmd)));
+                        .forEach(cmd -> sendLocalizedMessage("blocked_cmd_item", Component.literal("/" + cmd)));
             }
         }
     }
 
     private void displaySourceList() {
         sendLocalizedMessage("sources_header");
-        String ytStatus = configManager.getConfig().isYoutubeEnabled() ? "§aON" : "§cOFF";
-        String tgStatus = configManager.getConfig().isTelegramEnabled() ? "§aON" : "§cOFF";
-        sendMsg("§f- YouTube: " + ytStatus);
-        sendMsg("§f- Telegram: " + tgStatus);
+        Component ytStatus = configManager.getConfig().isYoutubeEnabled() ? Component.translatable("cycm.state.on") : Component.translatable("cycm.state.off");
+        Component tgStatus = configManager.getConfig().isTelegramEnabled() ? Component.translatable("cycm.state.on") : Component.translatable("cycm.state.off");
+        
+        sendLocalizedMessage("source_item", Component.translatable("cycm.source.youtube"), ytStatus);
+        sendLocalizedMessage("source_item", Component.translatable("cycm.source.telegram"), tgStatus);
     }
 
     private void setSourceState(String source, boolean enabled) {
         if ("youtube".equalsIgnoreCase(source) || "yt".equalsIgnoreCase(source)) {
             configManager.getConfig().setYoutubeEnabled(enabled);
             configManager.saveConfig();
-            sendLocalizedMessage("source_state_changed", "YouTube",
-                    (enabled ? Text.translatable("cycm.state.enabled") : Text.translatable("cycm.state.disabled")));
-            if (configManager.getConfig().isModEnabled())
+            sendLocalizedMessage("source_state_changed", Component.translatable("cycm.source.youtube"),
+                    (enabled ? Component.translatable("cycm.state.enabled") : Component.translatable("cycm.state.disabled")));
+            if (configManager.getConfig().isModEnabled()) {
+                stopChatSource();
                 startChatSource();
+            }
         } else if ("telegram".equalsIgnoreCase(source) || "tg".equalsIgnoreCase(source)) {
             configManager.getConfig().setTelegramEnabled(enabled);
             configManager.saveConfig();
-            sendLocalizedMessage("source_state_changed", "Telegram",
-                    (enabled ? Text.translatable("cycm.state.enabled") : Text.translatable("cycm.state.disabled")));
-            if (configManager.getConfig().isModEnabled())
+            sendLocalizedMessage("source_state_changed", Component.translatable("cycm.source.telegram"),
+                    (enabled ? Component.translatable("cycm.state.enabled") : Component.translatable("cycm.state.disabled")));
+            if (configManager.getConfig().isModEnabled()) {
+                stopChatSource();
                 startChatSource();
+            }
         } else {
             sendLocalizedMessage("unknown_source", source);
         }
     }
 
+    public static void setSourceStateFromUI(String source, boolean enabled) {
+        if (instance != null) {
+            instance.setSourceState(source, enabled);
+        }
+    }
+
     private int execKillAura(double r) {
-        MinecraftClient c = MinecraftClient.getInstance();
+        Minecraft c = Minecraft.getInstance();
         if (c == null || c.player == null) {
             sendLocalizedMessage("no_player");
             return 0;
         }
         sendToSrv(String.format("kill @e[type=!player,distance=..%.0f]", r));
-        sendLocalizedMessage("executing_killaura", Text.literal(String.valueOf((int) r)));
-        if (c.world != null) {
+        sendLocalizedMessage("executing_killaura", Component.literal(String.valueOf((int) r)));
+        if (c.level != null) {
             double px = c.player.getX();
             double py = c.player.getY();
             double pz = c.player.getZ();
@@ -833,14 +1125,14 @@ public class CYCMClient implements ClientModInitializer {
                 double angle = 2 * Math.PI * i / numP;
                 double x = px + r * Math.cos(angle);
                 double z = pz + r * Math.sin(angle);
-                c.particleManager.addParticle(ParticleTypes.CRIT, x, py + c.player.getHeight() / 2, z, 0, 0.1, 0);
+                c.particleEngine.createParticle(ParticleTypes.CRIT, x, py + c.player.getBbHeight() / 2, z, 0, 0.1, 0);
             }
         }
         return 1;
     }
 
     private int execKillEntities() {
-        MinecraftClient c = MinecraftClient.getInstance();
+        Minecraft c = Minecraft.getInstance();
         if (c == null || c.player == null) {
             sendLocalizedMessage("no_player");
             return 0;
@@ -856,58 +1148,76 @@ public class CYCMClient implements ClientModInitializer {
     }
 
     public static void sendLocalizedMessage(String key, Object... args) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client != null && client.player != null) {
-            Object[] processedArgs = Arrays.stream(args)
-                    .map(arg -> arg instanceof String ? Text.literal((String) arg) : arg).toArray();
-            Text message = Text.translatable("cycm.message." + key, processedArgs);
-            Formatting defaultColor = Formatting.GOLD;
+        Minecraft client = Minecraft.getInstance();
+        if (client == null) return;
+        
+        client.execute(() -> {
+            if (client.player != null) {
+                Object[] processedArgs = Arrays.stream(args)
+                        .map(arg -> arg instanceof String ? Component.literal((String) arg) : arg).toArray();
+                MutableComponent message = Component.translatable("cycm.message." + key, processedArgs);
+                ChatFormatting defaultColor = ChatFormatting.GOLD;
 
-            if (key.startsWith("bad_") || key.endsWith("_error") || key.endsWith("_warning")
-                    || key.equals("cmd_blocked") || key.equals("mod_cmd_cannot_be_blocked")
-                    || key.equals("mod_cmd_cannot_be_unblocked") || key.equals("no_player") || key.startsWith("ai_")) {
-                message = message.copy().formatted(Formatting.RED);
-            } else if (key.endsWith("_success") || key.equals("cmd_unblocked_success")
-                    || key.equals("all_cmds_unblocked") || key.startsWith("yt_key") || key.startsWith("yt_id")
-                    || key.startsWith("ai_key")) {
-                message = message.copy().formatted(Formatting.GREEN);
-            } else if (key.endsWith("_message") || key.equals("restarting_cycm_message")
-                    || key.equals("mod_off_no_player_auto_start") || key.equals("no_blocked_cmds")
-                    || key.equals("blocked_cmds_header")) {
-                message = message.copy().formatted(Formatting.AQUA);
-            } else if (key.endsWith("already_blocked") || key.endsWith("already_state")
-                    || key.equals("cmd_not_blocked")) {
-                message = message.copy().formatted(Formatting.YELLOW);
-            } else {
-                message = message.copy().formatted(defaultColor);
+                if (key.startsWith("bad_") || key.endsWith("_error") || key.endsWith("_warning")
+                        || key.equals("cmd_blocked") || key.equals("mod_cmd_cannot_be_blocked")
+                        || key.equals("mod_cmd_cannot_be_unblocked") || key.equals("no_player") || key.startsWith("ai_")) {
+                    message = message.copy().withStyle(ChatFormatting.RED);
+                } else if (key.endsWith("_success") || key.equals("cmd_unblocked_success")
+                        || key.equals("all_cmds_unblocked") || key.startsWith("yt_key") || key.startsWith("yt_id")
+                        || key.startsWith("ai_key")) {
+                    message = message.copy().withStyle(ChatFormatting.GREEN);
+                } else if (key.endsWith("_message") || key.equals("restarting_cycm_message")
+                        || key.equals("mod_off_no_player_auto_start") || key.equals("no_blocked_cmds")
+                        || key.equals("blocked_cmds_header")) {
+                    message = message.copy().withStyle(ChatFormatting.AQUA);
+                } else if (key.endsWith("already_blocked") || key.endsWith("already_state")
+                        || key.equals("cmd_not_blocked")) {
+                    message = message.copy().withStyle(ChatFormatting.YELLOW);
+                } else {
+                    message = message.copy().withStyle(defaultColor);
+                }
+                client.player.sendSystemMessage(message);
             }
-            client.player.sendMessage(message, false);
-        }
+        });
     }
 
-    public static void sendMsg(Text msg) {
-        MinecraftClient c = MinecraftClient.getInstance();
+    public static void sendMsg(Component msg) {
+        Minecraft c = Minecraft.getInstance();
         if (c != null && c.player != null)
-            c.player.sendMessage(msg, false);
+            c.player.sendSystemMessage(msg);
     }
 
     public static void sendMsg(String msg) {
-        sendMsg(Text.literal(msg));
+        sendMsg(Component.literal(msg));
     }
 
     private void sendToSrv(String cmd) {
-        if (MinecraftClient.getInstance().player != null)
-            MinecraftClient.getInstance().getNetworkHandler().sendChatCommand(cmd);
+        if (Minecraft.getInstance().player != null) {
+            String finalCmd = cmd;
+            if (configManager.getConfig().isCompatibilityMode() && !cmd.contains(":")) {
+                // Add minecraft: prefix if compatibility mode is enabled and no namespace is present
+                finalCmd = "minecraft:" + cmd;
+            }
+            Minecraft.getInstance().getConnection().sendCommand(finalCmd);
+        }
     }
 
-    private void updateActionbar(MinecraftClient client) {
+    private void updateActionbar(Minecraft client) {
         if (client.player == null)
             return;
         String yt = configManager.getConfig().isYoutubeEnabled() ? "§aYT" : "§7YT";
         String tg = configManager.getConfig().isTelegramEnabled() ? "§aTG" : "§7TG";
         String mode = configManager.getConfig().getChatMode().name();
 
-        Text status = Text.translatable("cycm.message.actionbar_status", yt, mode, tg);
-        client.player.sendMessage(status, true);
+        Component status = Component.translatable("cycm.message.actionbar_status", yt, mode, tg);
+        client.player.sendOverlayMessage(status);
     }
 }
+
+
+
+
+
+
+
+

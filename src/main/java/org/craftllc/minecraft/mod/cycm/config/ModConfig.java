@@ -1,5 +1,8 @@
 package org.craftllc.minecraft.mod.cycm.config;
 
+import java.util.ArrayList;
+import java.util.List;
+
 // Клас, що представляє структуру JSON-файлу конфігурації
 public class ModConfig {
 
@@ -8,11 +11,22 @@ public class ModConfig {
     private String youtubeApiKey = "";
     private String youtubeVideoId = "";
     private ChatMode chatMode = ChatMode.API;
-    private int httpPort = 21456;
+    private int httpMessagesPort = 21456;  // Renamed from httpPort
+    private String youtubeClientId = "";
+    private String youtubeClientSecret = "";
+    private boolean youtubeSendEnabled = false;
     private boolean telegramEnabled = false;
     private String telegramToken = "";
     private boolean groupingMessages = true;
     private boolean actionbarEnabled = false;
+    private boolean compatibilityMode = false;  // Add minecraft: prefix to commands
+    private boolean webUIEnabled = false;
+    private int webUIPort = 21457;
+    private List<String> blockedCommands = new ArrayList<>();
+    private int maxRepeats = 20;
+    private int maxDelaySeconds = 5;
+    private int maxTntCount = 20;
+    private int maxTntRadius = 8;
 
     public enum ChatMode {
         API,
@@ -63,12 +77,12 @@ public class ModConfig {
         this.chatMode = chatMode;
     }
 
-    public int getHttpPort() {
-        return httpPort;
+    public int getHttpMessagesPort() {
+        return httpMessagesPort;
     }
 
-    public void setHttpPort(int httpPort) {
-        this.httpPort = httpPort;
+    public void setHttpMessagesPort(int httpMessagesPort) {
+        this.httpMessagesPort = httpMessagesPort;
     }
 
     public boolean isTelegramEnabled() {
@@ -101,5 +115,96 @@ public class ModConfig {
 
     public void setActionbarEnabled(boolean actionbarEnabled) {
         this.actionbarEnabled = actionbarEnabled;
+    }
+
+    public String getYoutubeClientId() {
+        return youtubeClientId;
+    }
+
+    public void setYoutubeClientId(String youtubeClientId) {
+        this.youtubeClientId = youtubeClientId;
+    }
+
+    public String getYoutubeClientSecret() {
+        return youtubeClientSecret;
+    }
+
+    public void setYoutubeClientSecret(String youtubeClientSecret) {
+        this.youtubeClientSecret = youtubeClientSecret;
+    }
+
+    public boolean isYoutubeSendEnabled() {
+        return youtubeSendEnabled;
+    }
+
+    public void setYoutubeSendEnabled(boolean youtubeSendEnabled) {
+        this.youtubeSendEnabled = youtubeSendEnabled;
+    }
+
+    public boolean isCompatibilityMode() {
+        return compatibilityMode;
+    }
+
+    public void setCompatibilityMode(boolean compatibilityMode) {
+        this.compatibilityMode = compatibilityMode;
+    }
+
+    public boolean isWebUIEnabled() {
+        return webUIEnabled;
+    }
+
+    public void setWebUIEnabled(boolean webUIEnabled) {
+        this.webUIEnabled = webUIEnabled;
+    }
+
+    public int getWebUIPort() {
+        return webUIPort;
+    }
+
+    public void setWebUIPort(int webUIPort) {
+        this.webUIPort = webUIPort;
+    }
+
+    public List<String> getBlockedCommands() {
+        if (blockedCommands == null) {
+            blockedCommands = new ArrayList<>();
+        }
+        return blockedCommands;
+    }
+
+    public void setBlockedCommands(List<String> blockedCommands) {
+        this.blockedCommands = blockedCommands == null ? new ArrayList<>() : new ArrayList<>(blockedCommands);
+    }
+
+    public int getMaxRepeats() {
+        return maxRepeats;
+    }
+
+    public void setMaxRepeats(int maxRepeats) {
+        this.maxRepeats = maxRepeats;
+    }
+
+    public int getMaxDelaySeconds() {
+        return maxDelaySeconds;
+    }
+
+    public void setMaxDelaySeconds(int maxDelaySeconds) {
+        this.maxDelaySeconds = maxDelaySeconds;
+    }
+
+    public int getMaxTntCount() {
+        return maxTntCount;
+    }
+
+    public void setMaxTntCount(int maxTntCount) {
+        this.maxTntCount = maxTntCount;
+    }
+
+    public int getMaxTntRadius() {
+        return maxTntRadius;
+    }
+
+    public void setMaxTntRadius(int maxTntRadius) {
+        this.maxTntRadius = maxTntRadius;
     }
 }

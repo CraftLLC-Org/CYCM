@@ -35,7 +35,6 @@ public class HttpChatServer {
         if (server != null) {
             server.stop(0);
             server = null;
-            Constants.LOGGER.info("HTTP Chat Server stopped.");
         }
     }
 
@@ -49,6 +48,30 @@ public class HttpChatServer {
 
             if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
                 exchange.sendResponseHeaders(204, -1);
+                exchange.close();
+                return;
+            }
+
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                String query = exchange.getRequestURI().getQuery();
+                if (query != null && query.contains("code=")) {
+                    String code = query.split("code=")[1].split("&")[0];
+                    org.craftllc.minecraft.mod.cycm.youtube.YouTubeClient.exchangeCodeForTokens(code);
+
+                    String response = "Authentication successful! You can now close this window and return to Minecraft.";
+                    byte[] rb = response.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, rb.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(rb);
+                    }
+                } else {
+                    String response = "CYCM HTTP Server is running.";
+                    byte[] rb = response.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, rb.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(rb);
+                    }
+                }
                 exchange.close();
                 return;
             }

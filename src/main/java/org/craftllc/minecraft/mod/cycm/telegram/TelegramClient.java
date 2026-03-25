@@ -45,7 +45,6 @@ public class TelegramClient {
         }
         scheduler = null;
         isPolling = false;
-        Constants.LOGGER.info("Telegram polling stopped.");
     }
 
     private static void startLoop() {

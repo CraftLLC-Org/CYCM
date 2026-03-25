@@ -25,6 +25,9 @@ public class LiveStateManager {
         public String lastVideoId = "";
         public Set<String> processedMessageIds = new HashSet<>();
         public long lastTelegramUpdateId = 0;
+        public String youtubeAccessToken = "";
+        public String youtubeRefreshToken = "";
+        public long youtubeTokenExpiry = 0;
     }
 
     public static void load() {
@@ -89,5 +92,28 @@ public class LiveStateManager {
 
     public static int getProcessedCount() {
         return state.processedMessageIds == null ? 0 : state.processedMessageIds.size();
+    }
+
+    public static String getYoutubeAccessToken() {
+        return state.youtubeAccessToken;
+    }
+
+    public static void setYoutubeAccessToken(String token, long expiry) {
+        state.youtubeAccessToken = token;
+        state.youtubeTokenExpiry = expiry;
+        save();
+    }
+
+    public static String getYoutubeRefreshToken() {
+        return state.youtubeRefreshToken;
+    }
+
+    public static void setYoutubeRefreshToken(String token) {
+        state.youtubeRefreshToken = token;
+        save();
+    }
+
+    public static long getYoutubeTokenExpiry() {
+        return state.youtubeTokenExpiry;
     }
 }
