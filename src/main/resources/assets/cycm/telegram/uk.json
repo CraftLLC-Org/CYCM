@@ -1,5 +1,8 @@
 {
-    "welcome": "Привіт! Я бот CYCM. Ви можете надсилати команди прямо сюди.",
-    "blocked_commands_btn": "🚫 Заблоковані команди",
-    "blocked_commands_header": "🚫 *Заблоковані команди:*\n"
+  "welcome": "Привіт! Я бот CYCM. Ви можете надсилати команди прямо сюди.",
+  "blocked_commands_btn": "Заблоковані команди",
+  "blocked_commands_header": "*Заблоковані команди:*\n",
+  "script_disabled": "Скриптинг CYCM вимкнено.",
+  "script_executed": "Скрипт `%s` виконано.",
+  "script_failed": "Не вдалося виконати скрипт `%s`.\nПомилка: `%s`"
 }

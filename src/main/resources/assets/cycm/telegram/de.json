@@ -1,0 +1,8 @@
+{
+  "welcome": "Willkommen! Ich bin der CYCM-Bot. Du kannst hier direkt Befehle senden.",
+  "blocked_commands_btn": "Blockierte Befehle",
+  "blocked_commands_header": "*Blockierte Befehle:*\n",
+  "script_disabled": "CYCM-Skripting ist deaktiviert.",
+  "script_executed": "Skript `%s` wurde ausgeführt.",
+  "script_failed": "Skript `%s` konnte nicht ausgeführt werden.\nFehler: `%s`"
+}

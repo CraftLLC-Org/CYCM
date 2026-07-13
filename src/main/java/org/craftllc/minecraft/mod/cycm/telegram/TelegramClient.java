@@ -5,12 +5,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.craftllc.minecraft.mod.cycm.Constants;
 import org.craftllc.minecraft.mod.cycm.CYCMClient;
+import org.craftllc.minecraft.mod.cycm.script.CYCMScriptEngine;
 import org.craftllc.minecraft.mod.cycm.youtube.LiveStateManager;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -102,8 +104,7 @@ public class TelegramClient {
 
             if (update.has("message")) {
                 JsonObject msg = update.getAsJsonObject("message");
-                if (msg.has("text") && msg.has("from") && msg.has("chat")) {
-                    String text = msg.get("text").getAsString();
+                if (msg.has("from") && msg.has("chat")) {
                     long chatId = msg.getAsJsonObject("chat").get("id").getAsLong();
                     JsonObject from = msg.getAsJsonObject("from");
                     String author = from.get("first_name").getAsString();
@@ -113,23 +114,110 @@ public class TelegramClient {
                         author = "@" + from.get("username").getAsString();
                     }
 
-                    if (text.equalsIgnoreCase("/start")) {
-                        sendWelcome(chatId, lang);
-                    } else if (text.equals(TelegramTranslator.getTranslation(lang, "blocked_commands_btn"))) {
-                        sendBlockedList(chatId, lang);
-                    } else {
-                        // Split by newline to support consecutive commands
-                        String[] lines = text.split("\\r?\\n");
-                        for (String line : lines) {
-                            if (line.trim().isEmpty())
-                                continue;
-                            // Using processYouTubeMessage as it handles the logic for command execution
-                            CYCMClient.getInstance().processYouTubeMessage("[TG] " + author, line.trim());
+                    if (msg.has("document")) {
+                        handleDocumentMessage(msg.getAsJsonObject("document"), chatId, author, lang);
+                    }
+
+                    if (msg.has("text")) {
+                        String text = msg.get("text").getAsString();
+                        if (text.equalsIgnoreCase("/start")) {
+                            sendWelcome(chatId, lang);
+                        } else if (text.equals(TelegramTranslator.getTranslation(lang, "blocked_commands_btn"))) {
+                            sendBlockedList(chatId, lang);
+                        } else {
+                            String[] lines = text.split("\\r?\\n");
+                            for (String line : lines) {
+                                if (line.trim().isEmpty())
+                                    continue;
+                                CYCMClient.getInstance().processYouTubeMessage("[TG] " + author, line.trim());
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    private static void handleDocumentMessage(JsonObject document, long chatId, String author, String lang) {
+        if (!CYCMClient.configManager.getConfig().isScriptEnabled()) {
+            sendMessage(chatId, TelegramTranslator.getTranslation(lang, "script_disabled"), null);
+            return;
+        }
+        if (!document.has("file_name") || !document.has("file_id")) {
+            return;
+        }
+
+        String fileName = document.get("file_name").getAsString();
+        if (!fileName.toLowerCase().endsWith(".cycm")) {
+            return;
+        }
+
+        try {
+            String fileId = document.get("file_id").getAsString();
+            String filePath = getTelegramFilePath(fileId);
+            String scriptSource = downloadTelegramFile(filePath);
+            CYCMScriptEngine.executeFromTelegram("[TG] " + author, fileName, scriptSource)
+                    .thenAccept(result -> {
+                        if (result.succeeded()) {
+                            sendMessage(chatId, String.format(
+                                    TelegramTranslator.getTranslation(lang, "script_executed"), escapeMarkdown(fileName)), null);
+                        } else {
+                            sendMessage(chatId, String.format(
+                                    TelegramTranslator.getTranslation(lang, "script_failed"),
+                                    escapeMarkdown(fileName),
+                                    escapeMarkdown(result.errorMessage() == null ? "Unknown error" : result.errorMessage())), null);
+                        }
+                    });
+        } catch (Exception e) {
+            Constants.LOGGER.error("Failed to execute Telegram script " + fileName, e);
+            sendMessage(chatId, String.format(
+                    TelegramTranslator.getTranslation(lang, "script_failed"),
+                    escapeMarkdown(fileName),
+                    escapeMarkdown(e.getMessage() == null ? "Unknown error" : e.getMessage())), null);
+        }
+    }
+
+    private static String escapeMarkdown(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text
+                .replace("\\", "\\\\")
+                .replace("_", "\\_")
+                .replace("*", "\\*")
+                .replace("[", "\\[")
+                .replace("]", "\\]")
+                .replace("`", "\\`");
+    }
+
+    private static String getTelegramFilePath(String fileId) throws Exception {
+        String token = CYCMClient.configManager.getConfig().getTelegramToken();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(API_URL + token + "/getFile?file_id=" + fileId))
+                .GET()
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Telegram getFile failed with " + response.statusCode());
+        }
+        JsonObject json = gson.fromJson(response.body(), JsonObject.class);
+        if (!json.has("ok") || !json.get("ok").getAsBoolean()) {
+            throw new IllegalStateException("Telegram getFile returned error");
+        }
+        return json.getAsJsonObject("result").get("file_path").getAsString();
+    }
+
+    private static String downloadTelegramFile(String filePath) throws Exception {
+        String token = CYCMClient.configManager.getConfig().getTelegramToken();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.telegram.org/file/bot" + token + "/" + filePath))
+                .GET()
+                .build();
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Telegram file download failed with " + response.statusCode());
+        }
+        return new String(response.body(), StandardCharsets.UTF_8);
     }
 
     private static void sendWelcome(long chatId, String lang) {

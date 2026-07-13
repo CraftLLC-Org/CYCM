@@ -18,3 +18,4 @@ test/
 run/
 config/
 remappedSrc
+build_output.txt

@@ -27,6 +27,8 @@ public class ModConfig {
     private int maxDelaySeconds = 5;
     private int maxTntCount = 20;
     private int maxTntRadius = 8;
+    private boolean scriptEnabled = false;
+    private List<String> blockedScriptVariables = new ArrayList<>();
 
     public enum ChatMode {
         API,
@@ -206,5 +208,26 @@ public class ModConfig {
 
     public void setMaxTntRadius(int maxTntRadius) {
         this.maxTntRadius = maxTntRadius;
+    }
+
+    public boolean isScriptEnabled() {
+        return scriptEnabled;
+    }
+
+    public void setScriptEnabled(boolean scriptEnabled) {
+        this.scriptEnabled = scriptEnabled;
+    }
+
+    public List<String> getBlockedScriptVariables() {
+        if (blockedScriptVariables == null) {
+            blockedScriptVariables = new ArrayList<>();
+        }
+        return blockedScriptVariables;
+    }
+
+    public void setBlockedScriptVariables(List<String> blockedScriptVariables) {
+        this.blockedScriptVariables = blockedScriptVariables == null
+                ? new ArrayList<>()
+                : new ArrayList<>(blockedScriptVariables);
     }
 }

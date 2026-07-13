@@ -34,7 +34,9 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -99,6 +101,29 @@ public class CYCMClient implements ClientModInitializer {
 
     public static int getMaxTntRadius() {
         return maxTntRadius;
+    }
+
+    public static List<String> getEnabledSources() {
+        List<String> sources = new ArrayList<>();
+        if (configManager != null) {
+            if (configManager.getConfig().isYoutubeEnabled()) {
+                sources.add("youtube");
+            }
+            if (configManager.getConfig().isTelegramEnabled()) {
+                sources.add("telegram");
+            }
+        }
+        return sources;
+    }
+
+    public static boolean isScriptVariableBlocked(String variablePath) {
+        if (configManager == null) {
+            return false;
+        }
+        return configManager.getConfig().getBlockedScriptVariables().stream()
+                .filter(Objects::nonNull)
+                .map(v -> v.toLowerCase(Locale.ROOT))
+                .anyMatch(variablePath::equalsIgnoreCase);
     }
 
     @Override
@@ -521,6 +546,30 @@ public class CYCMClient implements ClientModInitializer {
         executeMulti(null, fullCmd, true);
     }
 
+    public static void runScriptCommand(String author, String fullCmd) {
+        if (instance == null) {
+            return;
+        }
+        Minecraft client = Minecraft.getInstance();
+        if (client == null) {
+            return;
+        }
+        client.execute(() -> instance.executeMulti(author, fullCmd, false));
+    }
+
+    public static void sendScriptChatMessage(String author, String message) {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.player == null) {
+            sendLocalizedMessage("no_player");
+            return;
+        }
+        client.execute(() -> {
+            if (instance != null && client.player != null) {
+                instance.procChatLine(author, message);
+            }
+        });
+    }
+
     private boolean isModCmd(String cmd) {
         return "cycm".equalsIgnoreCase(cmd) || "ce".equalsIgnoreCase(cmd);
     }
@@ -652,6 +701,40 @@ public class CYCMClient implements ClientModInitializer {
         }
     }
 
+    private void blockScriptVariable(String variable) {
+        String cleanVar = variable.trim().toLowerCase(Locale.ROOT);
+        if (cleanVar.isEmpty()) {
+            sendLocalizedMessage("script_var_empty_warning");
+            return;
+        }
+        List<String> blockedVars = configManager.getConfig().getBlockedScriptVariables();
+        if (blockedVars.stream().noneMatch(cleanVar::equalsIgnoreCase)) {
+            blockedVars.add(cleanVar);
+            configManager.saveConfig();
+            sendLocalizedMessage("script_var_blocked_success", Component.literal(cleanVar));
+        } else {
+            sendLocalizedMessage("script_var_already_blocked", Component.literal(cleanVar));
+        }
+    }
+
+    private void unblockScriptVariable(String variable) {
+        String cleanVar = variable.trim().toLowerCase(Locale.ROOT);
+        List<String> blockedVars = configManager.getConfig().getBlockedScriptVariables();
+        if ("all".equals(cleanVar)) {
+            blockedVars.clear();
+            configManager.saveConfig();
+            sendLocalizedMessage("script_vars_unblocked_success");
+            return;
+        }
+        boolean removed = blockedVars.removeIf(cleanVar::equalsIgnoreCase);
+        if (removed) {
+            configManager.saveConfig();
+            sendLocalizedMessage("script_var_unblocked_success", Component.literal(cleanVar));
+        } else {
+            sendLocalizedMessage("script_var_not_blocked", Component.literal(cleanVar));
+        }
+    }
+
     private void loadRepeatingSettings() {
         maxRepeats = Math.max(1, configManager.getConfig().getMaxRepeats());
         maxDelaySeconds = Math.max(0, configManager.getConfig().getMaxDelaySeconds());
@@ -773,6 +856,23 @@ public class CYCMClient implements ClientModInitializer {
                     })
                     // YouTube Config Commands
                     .then(literal("youtube")
+                            .then(literal("mode")
+                                    .then(literal("api").executes(ctx -> {
+                                        configManager.getConfig().setChatMode(ChatMode.API);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("mode_set_success", "API");
+                                        if (configManager.getConfig().isModEnabled())
+                                            startChatSource();
+                                        return 1;
+                                    }))
+                                    .then(literal("http").executes(ctx -> {
+                                        configManager.getConfig().setChatMode(ChatMode.HTTP);
+                                        configManager.saveConfig();
+                                        sendLocalizedMessage("mode_set_success", "HTTP");
+                                        if (configManager.getConfig().isModEnabled())
+                                            startChatSource();
+                                        return 1;
+                                    })))
                             .then(literal("key").then(argument("key", StringArgumentType.string()).executes(ctx -> {
                                 String key = StringArgumentType.getString(ctx, "key");
                                 configManager.getConfig().setYoutubeApiKey(key);
@@ -881,6 +981,27 @@ public class CYCMClient implements ClientModInitializer {
                                     TelegramClient.startPolling();
                                 return 1;
                             }))))
+                    .then(literal("script")
+                            .then(literal("on").executes(ctx -> {
+                                configManager.getConfig().setScriptEnabled(true);
+                                configManager.saveConfig();
+                                sendLocalizedMessage("script_state", Component.translatable("cycm.state.enabled"));
+                                return 1;
+                            }))
+                            .then(literal("off").executes(ctx -> {
+                                configManager.getConfig().setScriptEnabled(false);
+                                configManager.saveConfig();
+                                sendLocalizedMessage("script_state", Component.translatable("cycm.state.disabled"));
+                                return 1;
+                            })))
+                    .then(literal("blockvar").then(argument("var", StringArgumentType.greedyString()).executes(ctx -> {
+                        blockScriptVariable(StringArgumentType.getString(ctx, "var"));
+                        return 1;
+                    })))
+                    .then(literal("unblockvar").then(argument("var", StringArgumentType.greedyString()).executes(ctx -> {
+                        unblockScriptVariable(StringArgumentType.getString(ctx, "var"));
+                        return 1;
+                    })))
                     .then(literal("block").then(argument("cmd", StringArgumentType.greedyString())
                             .suggests((ctx, builder) -> sugBlock(ctx, builder)).executes(ctx -> {
                                 blockCommand(StringArgumentType.getString(ctx, "cmd"));
@@ -1183,8 +1304,14 @@ public class CYCMClient implements ClientModInitializer {
 
     public static void sendMsg(Component msg) {
         Minecraft c = Minecraft.getInstance();
-        if (c != null && c.player != null)
-            c.player.sendSystemMessage(msg);
+        if (c == null) {
+            return;
+        }
+        c.execute(() -> {
+            if (c.player != null) {
+                c.player.sendSystemMessage(msg);
+            }
+        });
     }
 
     public static void sendMsg(String msg) {

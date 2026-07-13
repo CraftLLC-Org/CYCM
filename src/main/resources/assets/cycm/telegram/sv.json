@@ -1,0 +1,8 @@
+{
+  "welcome": "Välkommen! Jag är CYCM-boten. Du kan skicka kommandon direkt här.",
+  "blocked_commands_btn": "Blockerade kommandon",
+  "blocked_commands_header": "*Blockerade kommandon:*\n",
+  "script_disabled": "CYCM-skriptning är avstängd.",
+  "script_executed": "Skriptet `%s` kördes.",
+  "script_failed": "Det gick inte att köra skriptet `%s`.\nFel: `%s`"
+}

@@ -20,6 +20,7 @@
 *   **🛡️ Command Blocking**: Protect your game by blacklisting dangerous commands.
 *   **💬 HUD Optimization**: Automatic message grouping (`x2`, `x3`) and real-time status actionbar.
 *   **🌍 Multilingual**: Full support for English, Ukrainian, and Russian.
+*   **📜 Scripting Engine**: Built-in simple programming language for complex automation.
 *   **📊 Detailed Logging**: Separate logs for commands and chat messages.
 
 ---
@@ -50,6 +51,33 @@ Use `!sleep <seconds>` inside a chain to pause before the next segment:
 
 ### 🔓 Special Characters
 *   Use `\` to escape special symbols: `/say \+10` will literally say "+10" in chat.
+
+---
+
+## 📜 Scripting
+
+CYCM includes a custom scripting engine for complex logic. Scripts can be executed via Telegram (more sources coming soon).
+
+### 🧩 Language Features
+*   **Variables**: `x = 10`, `server.name`, `client.version`.
+*   **Dynamic Data**: Access live game data like `server.online` (bool) or `server.list` (list of players).
+*   **Loops**: `for player in server.list: { chat(f"Hello {player}!") }`
+*   **Functions**:
+    *   `execute("/command")` — Runs a Minecraft command.
+    *   `chat("message")` — Sends a message as the author.
+    *   `range(start, end)` — Generates a list of numbers.
+*   **Custom Commands**: Define reusable blocks using `cmd`:
+    ```python
+    cmd my_action(target):
+        execute(f"/tp {target} ~ ~10 ~")
+        chat(f"Teleported {target} up!")
+    
+    my_action("PlayerName")
+    ```
+
+### 🛡️ Script Safety
+You can block specific script variables to prevent data leakage:
+*   `/cycm blockvar server.ip` — Access to the server IP via scripts is now blocked.
 
 ---
 
@@ -101,6 +129,9 @@ Use `!sleep <seconds>` inside a chain to pause before the next segment:
 | `/cycm http messages port <port>` | Set the HTTP server port for browser mode. |
 | `/cycm http ui port <port>` | Set the port for the Web Control Panel. |
 | `/cycm http ui <on\|off>` | Enable or disable the Web Control Panel. |
+| `/cycm script <on\|off>` | Master toggle for the scripting engine. |
+| `/cycm blockvar <path>` | Block access to a specific script variable (e.g. `server.ip`). |
+| `/cycm unblockvar <path\|all>` | Unblock script variable(s). |
 
 ---
 
@@ -132,9 +163,14 @@ CYCM features a modern **Web-based Control Panel** that allows you to configure 
 
 ## 📥 Installation & Setup
 
+### 🛠️ Dependencies
+The following mods are **required** or **highly recommended**:
+*   **[Fabric API](https://modrinth.com/mod/fabric-api)** (Required)
+
+
 ### 1️⃣ Install the Mod
 1. Download the latest `.jar` file from [Modrinth](https://modrinth.com/mod/cycm).
-2. Place it in your Fabric `mods` folder.
+2. Place it along with its dependencies in your Fabric `mods` folder.
 3. Launch Minecraft with Fabric Loader.
 
 ### 2️⃣ YouTube Setup (API Mode)

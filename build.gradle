@@ -11,11 +11,7 @@ base {
 }
 
 repositories {
-	// Add repositories to retrieve artifacts from in here.
-	// You should only use this when depending on other mods because
-	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
-	// See https://docs.gradle.org/current/userguide/declaring_repositories.html
-	// for more information about repositories.
+	maven { url "https://maven.fabricmc.net/" }
 }
 
 dependencies {
@@ -23,22 +19,24 @@ dependencies {
 	minecraft "net.minecraft:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
-	// Fabric API. This is technically optional, but you probably want it anyway.
-	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-	
 	implementation "com.google.code.gson:gson:2.10.1"
+
+	implementation "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
 }
 
 processResources {
 	inputs.property "version", project.version
-	inputs.property "minecraft_version", project.minecraft_version
 	inputs.property "loader_version", project.loader_version
+	inputs.property "fabric_version", project.fabric_version
+	inputs.property "minecraft_version", project.minecraft_version
+	inputs.property "minecraft_version_fabric", project.minecraft_version_fabric
 	filteringCharset "UTF-8"
 
 	filesMatching("fabric.mod.json") {
 		expand "version": project.version,
-				"minecraft_version": project.minecraft_version,
-				"loader_version": project.loader_version
+				"loader_version": project.loader_version,
+				"fabric_version": project.fabric_version,
+				"minecraft_version": project.minecraft_version_fabric
 	}
 }
 

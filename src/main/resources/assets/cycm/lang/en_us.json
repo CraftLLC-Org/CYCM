@@ -31,7 +31,7 @@
   "cycm.message.no_player": "§cNo player.",
   "cycm.message.executing_killaura": "§6Executing KillAura (radius %s)...",
   "cycm.message.executing_killentities": "§6Executing KillEntities...",
-  "cycm.message.cycm_usage": "§6Usage: /cycm <block|unblock|on|off|restart|stop|execute|num|delay|tnt|youtube|http|ytmode|tg|source>",
+  "cycm.message.cycm_usage": "§6Usage: /cycm <block|unblock|blockvar|unblockvar|script|on|off|restart|stop|execute|num|delay|tnt|youtube|http|tg|source>",
   "cycm.message.num_repeats_positive_warning": "§cNumber of repeats must be a positive integer.",
   "cycm.message.delay_positive_warning": "§cDelay must be a non-negative integer.",
   "cycm.message.repeats_set_success": "§aMax repeats set to %s.",
@@ -72,6 +72,15 @@
   "cycm.message.yt_not_configured": "§c[YouTube] API Key or Video ID not configured!",
   "cycm.message.source_item": "§f- %s: %s",
   "cycm.message.webui_state": "§6Web UI: %s",
+  "cycm.message.script_state": "§6Scripting: %s",
+  "cycm.message.script_error": "§cScript error: %s",
+  "cycm.message.script_runtime_error": "§cScript runtime error.",
+  "cycm.message.script_var_empty_warning": "§cVariable path cannot be empty.",
+  "cycm.message.script_var_blocked_success": "§aScript variable '%s' blocked.",
+  "cycm.message.script_var_already_blocked": "§eScript variable '%s' is already blocked.",
+  "cycm.message.script_vars_unblocked_success": "§aAll script variables unblocked.",
+  "cycm.message.script_var_unblocked_success": "§aScript variable '%s' unblocked.",
+  "cycm.message.script_var_not_blocked": "§eScript variable '%s' is not blocked.",
   "cycm.source.youtube": "YouTube",
   "cycm.source.telegram": "Telegram",
   "cycm.state.enabled": "enabled",
@@ -79,4 +88,3 @@
   "cycm.state.on": "§aON",
   "cycm.state.off": "§cOFF"
 }
-
